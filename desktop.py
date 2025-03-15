@@ -86,8 +86,64 @@ class ManusApp(Gtk.Application):
         window.present()  # Force focus
 
     def initialize_agent(self):
-        """Initialize the Manus agent"""
-        self.agent = Manus()
+        """Initialize the Manus agent with configuration"""
+        config_path = os.path.join(os.path.dirname(__file__), 'config', 'config.toml')
+        
+        try:
+            # Validate config existence and structure
+            if not os.path.exists(config_path):
+                raise ValueError(f"Missing configuration file: {config_path}")
+
+            with open(config_path, 'rb') as f:
+                config = tomli.load(f)
+
+            # Core agent initialization
+            self.agent = Manus(
+                api_key=config['llm']['api_key'],
+                model=config['llm'].get('model', 'gpt-4o'),
+                temperature=float(config['llm'].get('temperature', 0.7)),
+                max_tokens=int(config['llm'].get('max_tokens', 4000))
+            )
+
+            # Vision configuration
+            if config.get('vision', {}).get('enabled', False):
+                self.agent.enable_vision(
+                    model=config['vision'].get('model', 'gpt-4-vision-preview'),
+                    max_tokens=config['vision'].get('max_tokens', 2048)
+                )
+                self.vision_switch.set_active(True)
+
+            # Tool configuration
+            if hasattr(self.agent, 'enable_tools'):
+                available_tools = self.agent.get_available_tools()
+                enabled_tools = [
+                    t.lower().replace(' ', '_') 
+                    for t in config.get('tools', {}).get('enabled', [])
+                    if t.lower().replace(' ', '_') in available_tools
+                ]
+                self.agent.enable_tools(enabled_tools)
+                
+                # Update UI checkboxes with display names
+                for display_name, checkbox in self.tool_switches:
+                    tool_id = display_name.lower().replace(' ', '_')
+                    checkbox.set_active(tool_id in enabled_tools)
+                    checkbox.set_visible(tool_id in available_tools)
+
+            # Initialize UI state
+            self.model_combo.set_active_id(config['llm']['model'])
+            self.temp_scale.set_value(config['llm']['temperature'])
+            self.tokens_scale.set_value(config['llm']['max_tokens'])
+            
+            for tool, checkbox in self.tool_switches:
+                checkbox.set_active(tool in enabled_tools)
+                checkbox.set_visible(tool in available_tools)
+
+        except KeyError as e:
+            logging.error(f"Missing required config key: {str(e)}")
+            self.show_error_dialog(f"Invalid configuration: {str(e)}")
+        except Exception as e:
+            logging.error(f"Configuration error: {str(e)}")
+            self.show_error_dialog(f"Failed to initialize agent: {str(e)}")
         return self.agent
 
     def run_background_task(self, task_function, callback, *args, **kwargs):
@@ -232,17 +288,23 @@ class MainWindow(Gtk.ApplicationWindow):
         separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         sidebar_box.pack_start(separator, False, False, 10)
 
-        # Model selection
-        model_label = Gtk.Label(label="Model:")
-        model_label.set_halign(Gtk.Align.START)
-        sidebar_box.pack_start(model_label, False, False, 0)
+        # Provider selection
+        provider_frame = Gtk.Frame(label="AI Provider")
+        provider_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        provider_frame.add(provider_box)
 
+        self.provider_combo = Gtk.ComboBoxText()
+        providers = ["OpenAI", "Anthropic", "Mistral", "Groq", "Ollama"]
+        for provider in providers:
+            self.provider_combo.append_text(provider)
+        self.provider_combo.set_active(0)
+        self.provider_combo.connect("changed", self.on_provider_changed)
+        provider_box.pack_start(self.provider_combo, False, False, 5)
+
+        sidebar_box.pack_start(provider_frame, False, False, 10)
+
+        # Model selection now depends on provider
         self.model_combo = Gtk.ComboBoxText()
-        models = ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo", "claude-3-opus", "claude-3-sonnet"]
-        for model in models:
-            self.model_combo.append_text(model)
-        self.model_combo.set_active(0)
-        self.model_combo.connect("changed", self.on_model_changed)
         sidebar_box.pack_start(self.model_combo, False, False, 5)
 
         # Temperature setting
@@ -282,6 +344,18 @@ class MainWindow(Gtk.ApplicationWindow):
         self.tokens_scale.set_value_pos(Gtk.PositionType.RIGHT)
         self.tokens_scale.connect("value-changed", self.on_tokens_changed)
         sidebar_box.pack_start(self.tokens_scale, False, False, 0)
+
+        # Vision settings
+        vision_frame = Gtk.Frame(label="Vision Settings")
+        vision_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        vision_frame.add(vision_box)
+
+        self.vision_switch = Gtk.Switch()
+        self.vision_switch.set_active(False)
+        vision_box.pack_start(Gtk.Label(label="Enable Vision"), False, False, 0)
+        vision_box.pack_start(self.vision_switch, False, False, 0)
+
+        sidebar_box.pack_start(vision_frame, False, False, 10)
 
         # Tool selection
         tools_label = Gtk.Label(label="Available Tools:")
@@ -421,7 +495,16 @@ class MainWindow(Gtk.ApplicationWindow):
             self.status_bar.push(self.status_context, "Agent initialized")
 
     def on_submit_clicked(self, button):
-        """Handle submit button click"""
+        # Get config overrides from UI
+        vision_enabled = self.vision_switch.get_active()
+        
+        # Update agent config before execution
+        if hasattr(self.app.agent, 'vision_enabled'):
+            self.app.agent.vision_enabled = vision_enabled
+        
+        # Get selected tools from UI
+        tools = [tool[0] for tool in self.tool_switches if tool[1].get_active()]
+        
         # Get prompt from text view
         prompt = self.prompt_text.get_buffer().get_text(
             self.prompt_text.get_buffer().get_start_iter(),
@@ -451,12 +534,6 @@ class MainWindow(Gtk.ApplicationWindow):
         temperature = self.temp_scale.get_value()
         max_tokens = int(self.tokens_scale.get_value())
         
-        # Get selected tools
-        tools = []
-        for i, (tool_name, tool_enabled) in enumerate(self.tool_switches):
-            if tool_enabled.get_active():
-                tools.append(tool_name)
-
         # Run agent in background
         self.submit_button.set_sensitive(False)
         self._run_agent_thread(prompt, model, temperature, max_tokens, tools)
