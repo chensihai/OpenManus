@@ -1,0 +1,30 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Desktop",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "desktop.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "C:\\Users\\chens\\anaconda3\\envs\\open_manus\\python.exe",
+            "env": {
+                "GI_TYPELIB_PATH": "${env:CONDA_PREFIX}/Library/bin",
+            }
+            // "args": ["--max_tokens", "500"]
+        },
+        {
+            "name": "Streamlit: app.py",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "streamlit",
+            "args": [
+                "run",
+                "app.py"
+            ],
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        }
+    ]
+}

@@ -12,6 +12,7 @@ import os
 import sys
 import threading
 import asyncio
+import logging
 import ctypes
 from typing import Optional, Dict, Any, List
 # os.environ['PATH'] = r'C:\tools\msys64\mingw64\bin;' + os.environ['PATH']
@@ -36,6 +37,29 @@ if os.name == 'nt':
 
     # High DPI fix
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
+
+
+class GtkLogHandler(logging.Handler):
+    """Custom log handler that redirects log messages to a GTK TextView"""
+    
+    def __init__(self, text_view):
+        super().__init__()
+        self.text_view = text_view
+        self.buffer = text_view.get_buffer()
+        self.formatter = logging.Formatter('%(asctime)s | %(levelname)-8s | %(message)s')
+    
+    def emit(self, record):
+        log_entry = self.formatter.format(record) + '\n'
+        
+        # Use GLib.idle_add to safely update the UI from any thread
+        GLib.idle_add(self.update_text_view, log_entry)
+    
+    def update_text_view(self, text):
+        end_iter = self.buffer.get_end_iter()
+        self.buffer.insert(end_iter, text)
+        # Auto-scroll to the end
+        self.text_view.scroll_to_iter(self.buffer.get_end_iter(), 0.0, False, 0.0, 0.0)
+        return False  # Required for GLib.idle_add
 
 
 class ManusApp(Gtk.Application):
@@ -213,13 +237,13 @@ class MainWindow(Gtk.ApplicationWindow):
         model_label.set_halign(Gtk.Align.START)
         sidebar_box.pack_start(model_label, False, False, 0)
 
-        model_combo = Gtk.ComboBoxText()
+        self.model_combo = Gtk.ComboBoxText()
         models = ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo", "claude-3-opus", "claude-3-sonnet"]
         for model in models:
-            model_combo.append_text(model)
-        model_combo.set_active(0)
-        model_combo.connect("changed", self.on_model_changed)
-        sidebar_box.pack_start(model_combo, False, False, 5)
+            self.model_combo.append_text(model)
+        self.model_combo.set_active(0)
+        self.model_combo.connect("changed", self.on_model_changed)
+        sidebar_box.pack_start(self.model_combo, False, False, 5)
 
         # Temperature setting
         temp_label = Gtk.Label(label="Temperature:")
@@ -234,11 +258,11 @@ class MainWindow(Gtk.ApplicationWindow):
             page_increment=0.5,
             page_size=0
         )
-        temp_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=temp_adj)
-        temp_scale.set_digits(1)
-        temp_scale.set_value_pos(Gtk.PositionType.RIGHT)
-        temp_scale.connect("value-changed", self.on_temperature_changed)
-        sidebar_box.pack_start(temp_scale, False, False, 0)
+        self.temp_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=temp_adj)
+        self.temp_scale.set_digits(1)
+        self.temp_scale.set_value_pos(Gtk.PositionType.RIGHT)
+        self.temp_scale.connect("value-changed", self.on_temperature_changed)
+        sidebar_box.pack_start(self.temp_scale, False, False, 0)
 
         # Max tokens setting
         tokens_label = Gtk.Label(label="Max Tokens:")
@@ -253,11 +277,11 @@ class MainWindow(Gtk.ApplicationWindow):
             page_increment=1024,
             page_size=0
         )
-        tokens_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=tokens_adj)
-        tokens_scale.set_digits(0)
-        tokens_scale.set_value_pos(Gtk.PositionType.RIGHT)
-        tokens_scale.connect("value-changed", self.on_tokens_changed)
-        sidebar_box.pack_start(tokens_scale, False, False, 0)
+        self.tokens_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=tokens_adj)
+        self.tokens_scale.set_digits(0)
+        self.tokens_scale.set_value_pos(Gtk.PositionType.RIGHT)
+        self.tokens_scale.connect("value-changed", self.on_tokens_changed)
+        sidebar_box.pack_start(self.tokens_scale, False, False, 0)
 
         # Tool selection
         tools_label = Gtk.Label(label="Available Tools:")
@@ -270,11 +294,13 @@ class MainWindow(Gtk.ApplicationWindow):
         tools_frame.add(tools_box)
 
         tool_names = ["Python Execute", "Web Search", "Browser Use", "File Saver"]
+        self.tool_switches = []
         for tool in tool_names:
             checkbox = Gtk.CheckButton.new_with_label(tool)
             checkbox.set_active(True)
             checkbox.connect("toggled", self.on_tool_toggled, tool)
             tools_box.pack_start(checkbox, False, False, 0)
+            self.tool_switches.append((tool, checkbox))
 
         sidebar_box.pack_start(tools_frame, False, False, 0)
 
@@ -307,32 +333,39 @@ class MainWindow(Gtk.ApplicationWindow):
         prompt_scroll.set_min_content_height(100)
 
         self.prompt_buffer = Gtk.TextBuffer()
-        self.prompt_view = Gtk.TextView.new_with_buffer(self.prompt_buffer)
-        self.prompt_view.set_wrap_mode(Gtk.WrapMode.WORD)
-        prompt_scroll.add(self.prompt_view)
+        self.prompt_text = Gtk.TextView.new_with_buffer(self.prompt_buffer)
+        self.prompt_text.set_wrap_mode(Gtk.WrapMode.WORD)
+        prompt_scroll.add(self.prompt_text)
 
         content_box.pack_start(prompt_scroll, False, False, 0)
 
         # Submit button
-        submit_button = Gtk.Button.new_with_label("Submit")
-        submit_button.connect("clicked", self.on_submit_clicked)
-        content_box.pack_start(submit_button, False, False, 0)
+        self.submit_button = Gtk.Button.new_with_label("Submit")
+        self.submit_button.connect("clicked", self.on_submit_clicked)
+        content_box.pack_start(self.submit_button, False, False, 0)
 
         # Response display area
         response_label = Gtk.Label(label="Response:")
         response_label.set_halign(Gtk.Align.START)
         content_box.pack_start(response_label, False, False, 10)
 
+        # Create a scrolled window for the response text
         response_scroll = Gtk.ScrolledWindow()
         response_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-
-        self.response_buffer = Gtk.TextBuffer()
-        self.response_view = Gtk.TextView.new_with_buffer(self.response_buffer)
-        self.response_view.set_wrap_mode(Gtk.WrapMode.WORD)
-        self.response_view.set_editable(False)
-        response_scroll.add(self.response_view)
-
+        response_scroll.set_min_content_height(200)
+        
+        # Create a text view for the response
+        self.response_text = Gtk.TextView()
+        self.response_text.set_editable(False)
+        self.response_text.set_wrap_mode(Gtk.WrapMode.WORD)
+        response_scroll.add(self.response_text)
         content_box.pack_start(response_scroll, True, True, 0)
+        
+        # Set up custom log handler to capture output
+        self.log_handler = GtkLogHandler(self.response_text)
+        self.log_handler.setLevel(logging.INFO)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(self.log_handler)
 
         # Progress indicator
         self.progress_bar = Gtk.ProgressBar()
@@ -390,45 +423,108 @@ class MainWindow(Gtk.ApplicationWindow):
     def on_submit_clicked(self, button):
         """Handle submit button click"""
         # Get prompt from text view
-        start_iter = self.prompt_buffer.get_start_iter()
-        end_iter = self.prompt_buffer.get_end_iter()
-        prompt = self.prompt_buffer.get_text(start_iter, end_iter, True)
+        prompt = self.prompt_text.get_buffer().get_text(
+            self.prompt_text.get_buffer().get_start_iter(),
+            self.prompt_text.get_buffer().get_end_iter(),
+            True
+        )
 
         if not prompt.strip():
-            self.show_error_dialog("Please enter a prompt.")
+            self.show_error_dialog("Please enter a prompt")
             return
 
         # Clear response
-        self.response_buffer.set_text("")
+        self.response_text.get_buffer().set_text("")
+
+        # Log the start of agent execution to the response area
+        logging.info("Starting agent execution with prompt: %s", prompt[:50] + "..." if len(prompt) > 50 else prompt)
 
         # Start progress indicator
         self.start_progress_pulse()
-        self.status_bar.push(self.status_context, "Processing request...")
 
-        # Initialize agent if not already initialized
-        if self.app.agent is None:
+        # Initialize agent if needed
+        if not hasattr(self.app, 'agent') or self.app.agent is None:
             self.app.initialize_agent()
 
+        # Get values directly from UI widgets
+        model = self.model_combo.get_active_text() or "gpt-3.5-turbo"
+        temperature = self.temp_scale.get_value()
+        max_tokens = int(self.tokens_scale.get_value())
+        
+        # Get selected tools
+        tools = []
+        for i, (tool_name, tool_enabled) in enumerate(self.tool_switches):
+            if tool_enabled.get_active():
+                tools.append(tool_name)
+
         # Run agent in background
-        self.app.run_background_task(
-            self.app.agent.run,
-            self.on_agent_response,
-            prompt
-        )
+        self.submit_button.set_sensitive(False)
+        self._run_agent_thread(prompt, model, temperature, max_tokens, tools)
 
-    def on_agent_response(self, result, error=None):
-        """Handle agent response"""
-        # Stop progress indicator
-        self.stop_progress_pulse()
-
-        if error:
-            self.show_error_dialog(f"Error: {error}")
-            self.status_bar.push(self.status_context, "Error processing request")
-            return
-
-        # Update response display
-        self.response_buffer.set_text("Request processing completed.")
-        self.status_bar.push(self.status_context, "Request processing completed")
+    async def _run_agent_async(self, prompt, model, temperature, max_tokens, tools):
+        """Run the agent asynchronously and capture its output"""
+        try:
+            # Configure the agent if attributes exist
+            if hasattr(self.app.agent, 'model'):
+                self.app.agent.model = model
+            if hasattr(self.app.agent, 'temperature'):
+                self.app.agent.temperature = temperature
+            if hasattr(self.app.agent, 'max_tokens'):
+                self.app.agent.max_tokens = max_tokens
+            
+            # Log configuration
+            logging.info(f"Agent configuration: model={model}, temp={temperature}, max_tokens={max_tokens}")
+            logging.info(f"Selected tools: {tools}")
+            
+            # Run the agent
+            response = await self.app.agent.run(prompt)
+            
+            # Log and display the final response
+            logging.info(f"Agent response: {response}")
+            
+            # Update UI on the main thread
+            GLib.idle_add(self.update_response_complete, response)
+            
+        except Exception as e:
+            error_msg = f"Error running agent: {str(e)}"
+            logging.error(error_msg)
+            GLib.idle_add(self.update_response_error, error_msg)
+        finally:
+            # Always re-enable the submit button
+            GLib.idle_add(self.submit_button.set_sensitive, True)
+            GLib.idle_add(self.stop_progress_pulse)
+    
+    def _run_agent_thread(self, prompt, model, temperature, max_tokens, tools):
+        """Run the agent in a separate thread"""
+        # Create and run the asyncio event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self._run_agent_async(prompt, model, temperature, max_tokens, tools))
+        finally:
+            loop.close()
+    
+    def update_response_complete(self, response):
+        """Update the UI with the completed response"""
+        # Add a separator line
+        buffer = self.response_text.get_buffer()
+        end_iter = buffer.get_end_iter()
+        buffer.insert(end_iter, "\n\n----- FINAL RESPONSE -----\n\n")
+        buffer.insert(end_iter, response)
+        
+        # Update status
+        self.status_bar.push(self.status_context, "Request completed")
+        return False  # Required for GLib.idle_add
+    
+    def update_response_error(self, error_msg):
+        """Update the UI with an error message"""
+        buffer = self.response_text.get_buffer()
+        end_iter = buffer.get_end_iter()
+        buffer.insert(end_iter, f"\n\nERROR: {error_msg}\n")
+        
+        # Update status
+        self.status_bar.push(self.status_context, "Error occurred")
+        return False  # Required for GLib.idle_add
 
     def start_progress_pulse(self):
         """Start progress bar pulsing animation"""
