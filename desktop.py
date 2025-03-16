@@ -427,6 +427,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Model selection now depends on provider
         self.model_combo = Gtk.ComboBoxText()
+        self.model_combo.connect('changed', self.on_model_changed)  # Signal connection
         sidebar_box.pack_start(self.model_combo, False, False, 5)
 
         # Temperature setting
