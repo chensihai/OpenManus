@@ -108,70 +108,102 @@ class ManusApp(Gtk.Application):
             if 'llm' not in config:
                 config['llm'] = {}
             if 'default' not in config['llm']:
-                config['llm']['default'] = {
+                # If there are direct settings in llm, move them to default
+                default_settings = {}
+                direct_keys = ['model', 'base_url', 'api_key', 'max_tokens', 'temperature', 'api_type', 'api_version']
+
+                for key in direct_keys:
+                    if key in config['llm']:
+                        default_settings[key] = config['llm'][key]
+                        del config['llm'][key]
+
+                # Add missing required fields
+                required_fields = {
                     'model': 'gpt-3.5-turbo',
+                    'base_url': 'https://api.openai.com/v1',
+                    'api_key': '',
+                    'max_tokens': 2048,
                     'temperature': 0.7,
-                    'max_tokens': 2048
+                    'api_type': 'Openai',
+                    'api_version': ''
                 }
 
-            if 'llm' not in config:
-                raise ValueError(f"No configuration found for llm")
+                for field, default_value in required_fields.items():
+                    if field not in default_settings or default_settings[field] is None:
+                        default_settings[field] = default_value
 
-            llm_config = config['llm']
+                config['llm']['default'] = default_settings
+                modified = True
+            else:
+                # Ensure required fields exist in llm.default
+                required_fields = {
+                    'model': 'gpt-3.5-turbo',
+                    'base_url': 'https://api.openai.com/v1',
+                    'api_key': '',
+                    'max_tokens': 2048,
+                    'temperature': 0.7,
+                    'api_type': 'Openai',
+                    'api_version': ''
+                }
 
-            self.agent = Manus(
-                provider=provider,
-                api_key=llm_config.get('default', {}).get('api_key', ''),
-                model=model,
-                temperature=self.main_window.temp_scale.get_value(),
-                max_tokens=int(self.main_window.tokens_scale.get_value()),
-                base_url=llm_config.get('default', {}).get('base_url'),
-                api_version=llm_config.get('default', {}).get('api_version')
-            )
+                for field, default_value in required_fields.items():
+                    if field not in config['llm']['default'] or config['llm']['default'][field] is None:
+                        config['llm']['default'][field] = default_value
+                        modified = True
 
-            # Vision configuration
-            if config.get('vision', {}).get('enabled', False):
-                self.agent.enable_vision(
-                    model=config['vision'].get('model', 'gpt-4-vision-preview'),
-                    max_tokens=config['vision'].get('max_tokens', 2048)
-                )
-                self.main_window.vision_switch.set_active(True)
+            if modified:
+                with open(config_path, 'wb') as f:
+                    tomli_w.dump(config, f)
+                logging.info("Updated config structure")
 
-            # Initialize tool lists
-            available_tools = []
-            enabled_tools = []
-
-            if hasattr(self.agent, 'enable_tools'):
-                available_tools = self.agent.get_available_tools()
-                enabled_tools = [
-                    t.lower().replace(' ', '_')
-                    for t in config.get('tools', {}).get('enabled', [])
-                    if t.lower().replace(' ', '_') in available_tools
-                ]
-                self.agent.enable_tools(enabled_tools)
-
-                # Update UI checkboxes with display names
-                for display_name, checkbox in self.main_window.tool_switches:
-                    tool_id = display_name.lower().replace(' ', '_')
-                    checkbox.set_active(tool_id in enabled_tools)
-                    checkbox.set_visible(tool_id in available_tools)
-
-            # Initialize UI state
-            self.main_window.model_combo.set_active_id(config['llm']['default']['model'])
-            self.main_window.temp_scale.set_value(config['llm']['default']['temperature'])
-            self.main_window.tokens_scale.set_value(config['llm']['default']['max_tokens'])
-
-            for tool, checkbox in self.main_window.tool_switches:
-                checkbox.set_active(tool in enabled_tools)
-                checkbox.set_visible(tool in available_tools)
-
-        except KeyError as e:
-            logging.error(f"Missing required config key: {str(e)}")
-            self.main_window.show_error_dialog(f"Invalid configuration: {str(e)}")
         except Exception as e:
-            logging.error(f"Configuration error: {str(e)}")
-            self.main_window.show_error_dialog(f"Failed to initialize agent: {str(e)}")
-        return self.agent
+            logging.error(f"Error ensuring config fields: {str(e)}")
+
+        self.agent = Manus(
+            provider=provider,
+            api_key=config['llm']['default']['api_key'],
+            model=model,
+            temperature=self.main_window.temp_scale.get_value(),
+            max_tokens=int(self.main_window.tokens_scale.get_value()),
+            base_url=config['llm']['default']['base_url'],
+            api_version=config['llm']['default']['api_version']
+        )
+
+        # Vision configuration
+        if config.get('vision', {}).get('enabled', False):
+            self.agent.enable_vision(
+                model=config['vision'].get('model', 'gpt-4-vision-preview'),
+                max_tokens=config['vision'].get('max_tokens', 2048)
+            )
+            self.main_window.vision_switch.set_active(True)
+
+        # Initialize tool lists
+        available_tools = []
+        enabled_tools = []
+
+        if hasattr(self.agent, 'enable_tools'):
+            available_tools = self.agent.get_available_tools()
+            enabled_tools = [
+                t.lower().replace(' ', '_')
+                for t in config.get('tools', {}).get('enabled', [])
+                if t.lower().replace(' ', '_') in available_tools
+            ]
+            self.agent.enable_tools(enabled_tools)
+
+            # Update UI checkboxes with display names
+            for display_name, checkbox in self.main_window.tool_switches:
+                tool_id = display_name.lower().replace(' ', '_')
+                checkbox.set_active(tool_id in enabled_tools)
+                checkbox.set_visible(tool_id in available_tools)
+
+        # Initialize UI state
+        self.main_window.model_combo.set_active_id(config['llm']['default']['model'])
+        self.main_window.temp_scale.set_value(config['llm']['default']['temperature'])
+        self.main_window.tokens_scale.set_value(config['llm']['default']['max_tokens'])
+
+        for tool, checkbox in self.main_window.tool_switches:
+            checkbox.set_active(tool in enabled_tools)
+            checkbox.set_visible(tool in available_tools)
 
     def run_background_task(self, task_function, callback, *args, **kwargs):
         """Run a task in the background to keep UI responsive"""
@@ -207,6 +239,8 @@ class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="OpenManus")
         self.app = app
+        self.set_default_size(1200, 800)
+        self.set_size_request(800, 600)  # Minimum size constraints
 
         # Header bar with menu
         self.build_header_bar()
@@ -254,7 +288,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def build_content_area(self):
         main_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        main_paned.set_position(400)  # 400px for settings, rest for chat
+        main_paned.set_position(300)  # 25% of 1200px default width
 
         # Left Settings Panel
         settings_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -844,11 +878,11 @@ class MainWindow(Gtk.ApplicationWindow):
         # Prompt input
         prompt_label = self.create_label("Your Prompt:")
         self.prompt_buffer = Gtk.TextBuffer()
-        self.prompt_view = Gtk.TextView(buffer=self.prompt_buffer)
-        self.prompt_view.set_wrap_mode(Gtk.WrapMode.WORD)
+        self.prompt_text = Gtk.TextView(buffer=self.prompt_buffer)
+        self.prompt_text.set_wrap_mode(Gtk.WrapMode.WORD)
         prompt_scroll = Gtk.ScrolledWindow()
-        prompt_scroll.set_min_content_height(100)
-        prompt_scroll.add(self.prompt_view)
+        prompt_scroll.set_min_content_height(80)  # ~3 lines at 27px/line
+        prompt_scroll.add(self.prompt_text)
 
         # Response display
         response_label = self.create_label("Agent Response:")
