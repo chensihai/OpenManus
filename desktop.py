@@ -16,6 +16,7 @@ import tomli_w  # For writing TOML files
 import asyncio
 import ctypes
 from typing import Optional, Dict, Any, List
+import shutil
 
 # GUI toolkit imports
 import gi
@@ -93,8 +94,8 @@ class ManusApp(Gtk.Application):
             logger.error("Main window not initialized")
             return
 
-        provider = self.main_window.provider_combo.get_active_text().lower()
-        model = self.main_window.model_combo.get_active_text()
+        provider = self.main_window.provider_combo.get_active_id().lower()
+        model = self.main_window.model_combo.get_active_id()
 
         try:
             config_path = os.path.join(os.path.dirname(__file__), 'config', 'config.toml')
@@ -137,7 +138,7 @@ class ManusApp(Gtk.Application):
             else:
                 # Ensure required fields exist in llm.default
                 required_fields = {
-                    'model': 'gpt-3.5-turbo',
+                    'model': 'gpt-4o',
                     'base_url': 'https://api.openai.com/v1',
                     'api_key': '',
                     'max_tokens': 2048,
@@ -247,6 +248,13 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Main content
         self.build_content_area()
+
+        # Load configuration after UI is built
+        self.load_config_into_ui()
+
+        # Show all UI elements
+        self.show_all()
+
         self.connect("destroy", Gtk.main_quit)
 
     def build_header_bar(self):
@@ -297,29 +305,8 @@ class MainWindow(Gtk.ApplicationWindow):
         settings_box.set_margin_end(6)
 
         # AI Provider Configuration
-        provider_frame = self.create_config_frame("AI Provider")
-        provider_grid = Gtk.Grid(column_spacing=6, row_spacing=6)
-        
-        # Provider Selection
-        self.provider_combo = Gtk.ComboBoxText()
-        self.provider_combo.append_text("OpenAI")
-        self.provider_combo.append_text("Anthropic")
-        provider_grid.attach(self.create_label("Provider:"), 0, 0, 1, 1)
-        provider_grid.attach(self.provider_combo, 1, 0, 1, 1)
-
-        # API Key
-        self.api_key_entry = Gtk.Entry()
-        self.api_key_entry.set_visibility(False)
-        provider_grid.attach(self.create_label("API Key:"), 0, 1, 1, 1)
-        provider_grid.attach(self.api_key_entry, 1, 1, 1, 1)
-
-        # API URL
-        self.api_url_entry = Gtk.Entry()
-        provider_grid.attach(self.create_label("API URL:"), 0, 2, 1, 1)
-        provider_grid.attach(self.api_url_entry, 1, 2, 1, 1)
-
-        provider_frame.add(provider_grid)
-        settings_box.pack_start(provider_frame, False, False, 0)
+        self.provider_frame = self.build_provider_frame()
+        settings_box.pack_start(self.provider_frame, False, False, 0)
 
         # Model Parameters
         model_frame = self.create_config_frame("Model Parameters")
@@ -346,6 +333,49 @@ class MainWindow(Gtk.ApplicationWindow):
         
         self.add(main_paned)
 
+    def build_provider_frame(self):
+        # AI Provider frame
+        provider_frame = self.create_config_frame("AI Provider")
+        provider_grid = Gtk.Grid(row_spacing=8, column_spacing=8)
+        provider_grid.set_margin_start(12)
+        provider_grid.set_margin_end(12)
+        provider_grid.set_margin_top(8)
+        provider_grid.set_margin_bottom(8)
+        
+        # Provider selection
+        provider_label = self.create_label("Provider:")
+        self.provider_combo = Gtk.ComboBoxText()
+        for provider in ["Openai", "Anthropic", "Ollama", "Custom"]:
+            self.provider_combo.append(provider, provider)
+        self.provider_combo.set_active(0)  # Default to OpenAI
+        self.provider_combo.connect("changed", self.on_provider_changed)
+        
+        # API Key
+        api_key_label = self.create_label("API Key:")
+        self.api_key_entry = Gtk.Entry()
+        self.api_key_entry.set_visibility(False)  # Hide API key
+        
+        # API URL
+        api_url_label = self.create_label("API URL:")
+        self.api_url_entry = Gtk.Entry()
+        
+        # Model selection
+        model_label = self.create_label("Model:")
+        self.model_combo = Gtk.ComboBoxText()
+        
+        # Add to grid
+        provider_grid.attach(provider_label, 0, 0, 1, 1)
+        provider_grid.attach(self.provider_combo, 1, 0, 1, 1)
+        provider_grid.attach(api_key_label, 0, 1, 1, 1)
+        provider_grid.attach(self.api_key_entry, 1, 1, 1, 1)
+        provider_grid.attach(api_url_label, 0, 2, 1, 1)
+        provider_grid.attach(self.api_url_entry, 1, 2, 1, 1)
+        provider_grid.attach(model_label, 0, 3, 1, 1)
+        provider_grid.attach(self.model_combo, 1, 3, 1, 1)
+        
+        provider_frame.add(provider_grid)
+        return provider_frame
+
     def create_config_frame(self, label_text, margin=6):
         frame = Gtk.Frame()
         frame.set_label(label_text)
@@ -362,47 +392,96 @@ class MainWindow(Gtk.ApplicationWindow):
         return label
 
     def load_config_into_ui(self):
-        try:
-            config = self.load_config()
-            provider = config.get('provider', 'OpenAI')
-            self.provider_combo.set_active_id(provider)
+        config = self.load_config()
+        
+        if 'llm' in config and 'default' in config['llm']:
+            # Set provider
+            provider = config['llm']['default'].get('api_type', 'Openai')
+            if self.provider_combo.get_active_id() != provider:
+                self.provider_combo.set_active_id(provider)
             
-            # Load provider-specific settings
-            provider_config = config.get(provider.lower(), {})
-            self.api_key_entry.set_text(provider_config.get('api_key', ''))
-            self.api_url_entry.set_text(provider_config.get('base_url', ''))
-            self.temperature_scale.set_value(provider_config.get('temperature', 1.0))
-            self.max_tokens_spin.set_value(provider_config.get('max_tokens', 2000))
+            # Set API key and URL
+            if hasattr(self, 'api_key_entry'):
+                self.api_key_entry.set_text(config['llm']['default'].get('api_key', ''))
             
-        except Exception as e:
-            print(f"Error loading config: {e}")
-
+            if hasattr(self, 'api_url_entry'):
+                self.api_url_entry.set_text(config['llm']['default'].get('base_url', ''))
+            
+            # Set model parameters
+            if hasattr(self, 'model_combo'):
+                model = config['llm']['default'].get('model', 'gpt-3.5-turbo')
+                self.model_combo.set_active_id(model)
+            
+            if hasattr(self, 'temp_scale'):
+                temp = config['llm']['default'].get('temperature', 0.7)
+                self.temp_scale.set_value(temp)
+            
+            if hasattr(self, 'tokens_scale'):
+                tokens = config['llm']['default'].get('max_tokens', 2048)
+                self.tokens_scale.set_value(tokens)
+        
+        # Load other settings
+        if 'vision' in config:
+            if hasattr(self, 'vision_switch'):
+                self.vision_switch.set_active(config['vision'].get('enabled', False))
+    
     def save_config_from_ui(self):
         config = self.load_config()
-        provider = self.provider_combo.get_active_text()
         
-        config['provider'] = provider
-        config[provider.lower()] = {
-            'api_key': self.api_key_entry.get_text(),
-            'base_url': self.api_url_entry.get_text(),
-            'temperature': self.temperature_scale.get_value(),
-            'max_tokens': self.max_tokens_spin.get_value(),
-            'top_p': self.top_p_scale.get_value(),
-            'frequency_penalty': self.frequency_penalty_scale.get_value()
-        }
+        # Ensure config structure exists
+        if 'llm' not in config:
+            config['llm'] = {}
+        if 'default' not in config['llm']:
+            config['llm']['default'] = {}
+        
+        # Save provider and API settings
+        provider = self.provider_combo.get_active_id()
+        config['llm']['default']['api_type'] = provider
+        
+        if hasattr(self, 'api_key_entry'):
+            config['llm']['default']['api_key'] = self.api_key_entry.get_text()
+        
+        if hasattr(self, 'api_url_entry'):
+            config['llm']['default']['base_url'] = self.api_url_entry.get_text()
+        
+        # Save model parameters
+        if hasattr(self, 'model_combo'):
+            config['llm']['default']['model'] = self.model_combo.get_active_id()
+        
+        if hasattr(self, 'temp_scale'):
+            config['llm']['default']['temperature'] = self.temp_scale.get_value()
+        
+        if hasattr(self, 'tokens_scale'):
+            config['llm']['default']['max_tokens'] = int(self.tokens_scale.get_value())
+        
+        # Save other settings
+        if not 'vision' in config:
+            config['vision'] = {}
+        
+        if hasattr(self, 'vision_switch'):
+            config['vision']['enabled'] = self.vision_switch.get_active()
         
         self.save_config(config)
 
-    def load_config(self):
-        try:
-            with open('config/config.toml', 'rb') as f:
-                return tomli.load(f)
-        except FileNotFoundError:
-            return {}
-
     def save_config(self, config):
-        with open('config/config.toml', 'wb') as f:
+        config_dir = os.path.join(os.path.dirname(__file__), 'config')
+        config_path = os.path.join(config_dir, 'config.toml')
+        os.makedirs(config_dir, exist_ok=True)
+        
+        with open(config_path, 'wb') as f:
             tomli_w.dump(config, f)
+    
+    def load_config(self):
+        config_dir = os.path.join(os.path.dirname(__file__), 'config')
+        config_path = os.path.join(config_dir, 'config.toml')
+        os.makedirs(config_dir, exist_ok=True)
+        
+        if not os.path.exists(config_path):
+            example_path = os.path.join(config_dir, 'config.example.toml')
+            shutil.copyfile(example_path, config_path)
+        
+        with open(config_path, 'rb') as f:
+            return tomli.load(f)
 
     def on_about(self, action, param):
         """Show about dialog"""
@@ -532,68 +611,51 @@ class MainWindow(Gtk.ApplicationWindow):
         self.app.config_params['llm']['default']['model'] = model
 
     def on_provider_changed(self, combo):
-        """Handle provider selection change"""
-        active_text = combo.get_active_text()
-        if active_text is None:
-            # No provider selected, add default provider
-            self.provider_combo.handler_block_by_func(self.on_provider_changed)
-            self.provider_combo.remove_all()
-            self.provider_combo.append_text("OpenAI")
-            self.provider_combo.set_active(0)
-            self.provider_combo.handler_unblock_by_func(self.on_provider_changed)
+        provider = combo.get_active_id()
+        if not provider:
             return
-
-        provider = active_text.lower()
-        models = self._get_provider_models(provider)
-        self.model_combo.handler_block_by_func(self.on_model_changed)
-        self.model_combo.remove_all()
-        if models:
-            for model in models:
-                self.model_combo.append_text(model)
-            # Set first model as default if available
-            self.model_combo.set_active(0)
-            logger.info(f"Loaded {len(models)} models for {provider}")
+            
+        print(f"Provider changed to: {provider}")
+        
+        # Update UI based on provider
+        if provider == "Openai":
+            self.api_url_entry.set_text("https://api.openai.com/v1")
+            # Clear model combo and add OpenAI models
+            self.model_combo.remove_all()
+            for model in ["gpt-3.5-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini"]:
+                self.model_combo.append(model, model)
+        elif provider == "Anthropic":
+            self.api_url_entry.set_text("https://api.anthropic.com")
+            # Clear model combo and add Anthropic models
+            self.model_combo.remove_all()
+            for model in ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"]:
+                self.model_combo.append(model, model)
+        elif provider == "Ollama":
+            self.api_url_entry.set_text("http://localhost:11434")
+            # Clear model combo and add some Ollama models
+            self.model_combo.remove_all()
+            for model in ["llama3", "mistral", "mixtral", "codellama"]:
+                self.model_combo.append(model, model)
+        
+        # Try to restore the model from config
+        config = self.load_config()
+        if 'llm' in config and 'default' in config['llm']:
+            model = config['llm']['default'].get('model')
+            if model:
+                # Try to set the model if it exists in the combobox
+                model_iter = self.model_combo.get_model().get_iter_first()
+                while model_iter:
+                    if self.model_combo.get_model().get_value(model_iter, 0) == model:
+                        self.model_combo.set_active_iter(model_iter)
+                        break
+                    model_iter = self.model_combo.get_model().iter_next(model_iter)
+                
+                # If model not found, set the first one
+                if not self.model_combo.get_active_iter():
+                    self.model_combo.set_active(0)
         else:
-            logger.warning(f"No models found for {provider}, using defaults")
-            default_models = ["gpt-3.5-turbo", "gpt-4"]
-            for model in default_models:
-                self.model_combo.append_text(model)
+            # Set first model as default
             self.model_combo.set_active(0)
-        self.model_combo.handler_unblock_by_func(self.on_model_changed)
-
-    def _get_provider_models(self, provider):
-        try:
-            config_path = os.path.join(os.path.dirname(__file__), 'config', 'config.toml')
-            with open(config_path, 'rb') as f:
-                config = tomli.load(f)
-
-            # Handle legacy config format
-            if 'providers' not in config:
-                # Convert legacy format to new providers format
-                if provider == 'openai' and 'llm' in config:
-                    # Return models from llm section if available
-                    if 'model' in config['llm']:
-                        return [config['llm']['model']]
-                    else:
-                        return ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
-                else:
-                    # Default models for other providers
-                    default_models = {
-                        'anthropic': ["claude-3-opus", "claude-3-sonnet"],
-                        'mistral': ["mistral-large", "mistral-medium"],
-                        'groq': ["llama3-70b", "llama3-8b"],
-                        'ollama': ["llama3", "mistral"]
-                    }
-                    return default_models.get(provider, [])
-
-            # New config format
-            if provider in config['providers']:
-                return config['providers'][provider].get('models', [])
-            return []
-
-        except Exception as e:
-            logging.error(f"Error loading models: {str(e)}")
-            return []
 
     def on_temperature_changed(self, scale):
         """Handle temperature setting change"""
