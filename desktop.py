@@ -21,6 +21,7 @@ from typing import Optional, Dict, Any, List
 import gi
 gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib
+from gi.repository import Gio
 
 # Environment setup
 from dotenv import load_dotenv
@@ -139,11 +140,11 @@ class ManusApp(Gtk.Application):
             # Initialize tool lists
             available_tools = []
             enabled_tools = []
-            
+
             if hasattr(self.agent, 'enable_tools'):
                 available_tools = self.agent.get_available_tools()
                 enabled_tools = [
-                    t.lower().replace(' ', '_') 
+                    t.lower().replace(' ', '_')
                     for t in config.get('tools', {}).get('enabled', [])
                     if t.lower().replace(' ', '_') in available_tools
                 ]
@@ -204,36 +205,199 @@ class MainWindow(Gtk.ApplicationWindow):
     Handles the UI components, user interactions, and display logic.
     """
     def __init__(self, app):
-        super().__init__(title="OpenManus Desktop", application=app)
+        super().__init__(application=app, title="OpenManus")
         self.app = app
-        self.set_default_size(900, 700)
-        self.set_position(Gtk.WindowPosition.CENTER)
 
-        # Lifecycle logging
-        self.connect('map', lambda _: print("Window mapped"))
-        self.connect('unmap', lambda _: print("Window unmapped"))
-        self.connect('destroy', lambda _: print("Window destroyed"))
+        # Header bar with menu
+        self.build_header_bar()
 
-        # Set application icon
+        # Main content
+        self.build_content_area()
+        self.connect("destroy", Gtk.main_quit)
+
+    def build_header_bar(self):
+        header = Gtk.HeaderBar()
+        header.set_show_close_button(True)
+        header.set_title("OpenManus Desktop")
+
+        # Menu button with stacked icon
+        menu_button = Gtk.MenuButton()
+        menu_icon = Gtk.Image.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON)
+        menu_button.set_image(menu_icon)
+
+        # Menu items
+        menu = Gio.Menu()
+        menu.append("About OpenManus", "win.about")
+        menu.append("Documentation", "win.docs")
+        menu.append("Preferences", "win.preferences")
+        menu.append("Keyboard Shortcuts", "win.shortcuts")
+        menu.append("Privacy Policy", "win.privacy")
+
+        # Create action group
+        self.action_group = Gio.SimpleActionGroup()
+        actions = [
+            ('about', None, self.on_about),
+            ('docs', None, self.on_docs),
+            ('preferences', None, self.on_preferences),
+            ('shortcuts', None, self.on_shortcuts),
+            ('privacy', None, self.on_privacy)
+        ]
+        for name, param, callback in actions:
+            action = Gio.SimpleAction.new(name, param)
+            action.connect('activate', callback)
+            self.action_group.add_action(action)
+
+        self.insert_action_group("win", self.action_group)
+        menu_button.set_menu_model(menu)
+        header.pack_end(menu_button)
+        self.set_titlebar(header)
+
+    def build_content_area(self):
+        main_paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        main_paned.set_position(400)  # 400px for settings, rest for chat
+
+        # Left Settings Panel
+        settings_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        settings_box.set_margin_top(12)
+        settings_box.set_margin_start(12)
+        settings_box.set_margin_end(6)
+
+        # AI Provider Configuration
+        provider_frame = self.create_config_frame("AI Provider")
+        provider_grid = Gtk.Grid(column_spacing=6, row_spacing=6)
+        
+        # Provider Selection
+        self.provider_combo = Gtk.ComboBoxText()
+        self.provider_combo.append_text("OpenAI")
+        self.provider_combo.append_text("Anthropic")
+        provider_grid.attach(self.create_label("Provider:"), 0, 0, 1, 1)
+        provider_grid.attach(self.provider_combo, 1, 0, 1, 1)
+
+        # API Key
+        self.api_key_entry = Gtk.Entry()
+        self.api_key_entry.set_visibility(False)
+        provider_grid.attach(self.create_label("API Key:"), 0, 1, 1, 1)
+        provider_grid.attach(self.api_key_entry, 1, 1, 1, 1)
+
+        # API URL
+        self.api_url_entry = Gtk.Entry()
+        provider_grid.attach(self.create_label("API URL:"), 0, 2, 1, 1)
+        provider_grid.attach(self.api_url_entry, 1, 2, 1, 1)
+
+        provider_frame.add(provider_grid)
+        settings_box.pack_start(provider_frame, False, False, 0)
+
+        # Model Parameters
+        model_frame = self.create_config_frame("Model Parameters")
+        model_grid = Gtk.Grid(column_spacing=6, row_spacing=6)
+        
+        self.temperature_scale = self.create_scale("Temperature", 0, 2, 0.1)
+        self.max_tokens_spin = self.create_spin("Max Tokens", 128, 8192, 512)
+        self.top_p_scale = self.create_scale("Top P", 0, 1, 0.1)
+        self.frequency_penalty_scale = self.create_scale("Frequency Penalty", 0, 2, 0.1)
+        
+        model_grid.attach(self.temperature_scale, 0, 0, 1, 1)
+        model_grid.attach(self.max_tokens_spin, 0, 1, 1, 1)
+        model_grid.attach(self.top_p_scale, 0, 2, 1, 1)
+        model_grid.attach(self.frequency_penalty_scale, 0, 3, 1, 1)
+        model_frame.add(model_grid)
+
+        settings_box.pack_start(model_frame, True, True, 0)
+
+        # Chat Interface
+        chat_box = self.build_chat_interface()
+        
+        main_paned.pack1(settings_box, resize=False, shrink=False)
+        main_paned.pack2(chat_box, resize=True, shrink=False)
+        
+        self.add(main_paned)
+
+    def create_config_frame(self, label_text, margin=6):
+        frame = Gtk.Frame()
+        frame.set_label(label_text)
+        frame.set_label_align(0.1, 0.5)
+        frame.set_margin_top(margin)
+        frame.set_margin_bottom(margin)
+        frame.set_shadow_type(Gtk.ShadowType.ETCHED_IN)
+        return frame
+
+    def create_label(self, text):
+        label = Gtk.Label(label=text)
+        label.set_halign(Gtk.Align.START)
+        label.set_margin_end(6)
+        return label
+
+    def load_config_into_ui(self):
         try:
-            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.jpg")
-            if os.path.exists(icon_path):
-                self.set_icon_from_file(icon_path)
+            config = self.load_config()
+            provider = config.get('provider', 'OpenAI')
+            self.provider_combo.set_active_id(provider)
+            
+            # Load provider-specific settings
+            provider_config = config.get(provider.lower(), {})
+            self.api_key_entry.set_text(provider_config.get('api_key', ''))
+            self.api_url_entry.set_text(provider_config.get('base_url', ''))
+            self.temperature_scale.set_value(provider_config.get('temperature', 1.0))
+            self.max_tokens_spin.set_value(provider_config.get('max_tokens', 2000))
+            
         except Exception as e:
-            logger.warning(f"Could not load application icon: {e}")
+            print(f"Error loading config: {e}")
 
-        # Initialize all UI components first
-        self.build_main_window()
-        self.build_settings_dialog()
+    def save_config_from_ui(self):
+        config = self.load_config()
+        provider = self.provider_combo.get_active_text()
+        
+        config['provider'] = provider
+        config[provider.lower()] = {
+            'api_key': self.api_key_entry.get_text(),
+            'base_url': self.api_url_entry.get_text(),
+            'temperature': self.temperature_scale.get_value(),
+            'max_tokens': self.max_tokens_spin.get_value(),
+            'top_p': self.top_p_scale.get_value(),
+            'frequency_penalty': self.frequency_penalty_scale.get_value()
+        }
+        
+        self.save_config(config)
 
-        # Migrate legacy config if needed
-        self.migrate_legacy_config()
+    def load_config(self):
+        try:
+            with open('config/config.toml', 'rb') as f:
+                return tomli.load(f)
+        except FileNotFoundError:
+            return {}
 
-        # Load config into UI after initialization
-        GLib.idle_add(self.load_config_into_ui)
+    def save_config(self, config):
+        with open('config/config.toml', 'wb') as f:
+            tomli_w.dump(config, f)
 
-        # Connect signals
-        self.connect("delete-event", self.on_close)
+    def on_about(self, action, param):
+        """Show about dialog"""
+        dialog = Gtk.AboutDialog(transient_for=self, modal=True)
+        dialog.set_program_name("OpenManus Desktop")
+        dialog.set_version("1.0")
+        dialog.set_comments("A desktop application for the OpenManus agent")
+        dialog.set_website("https://openmanus.com")
+        dialog.set_website_label("OpenManus Website")
+        dialog.set_authors(["Your Name"])
+        dialog.set_copyright("Copyright 2023 Your Name")
+        dialog.run()
+        dialog.destroy()
+
+    def on_docs(self, action, param):
+        """Show documentation"""
+        print("Documentation")
+
+    def on_preferences(self, action, param):
+        """Show preferences dialog"""
+        print("Preferences")
+
+    def on_shortcuts(self, action, param):
+        """Show keyboard shortcuts"""
+        print("Shortcuts")
+
+    def on_privacy(self, action, param):
+        """Show privacy policy"""
+        print("Privacy Policy")
 
     def migrate_legacy_config(self):
         """Ensure config has required fields"""
@@ -244,7 +408,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 basic_config = {
                     'llm': {
                         'default': {
-                            'model': 'gpt-4o',
+                            'model': 'gpt-3.5-turbo',
                             'base_url': 'https://api.openai.com/v1',
                             'api_key': '',
                             'max_tokens': 4096,
@@ -323,397 +487,6 @@ class MainWindow(Gtk.ApplicationWindow):
 
         except Exception as e:
             logging.error(f"Error ensuring config fields: {str(e)}")
-
-    def build_main_window(self):
-        """Build the main UI components"""
-        # Main container
-        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.add(main_box)
-
-        # Add header bar with title and controls
-        header = self.build_header()
-        main_box.pack_start(header, False, False, 0)
-
-        # Main paned container for sidebar and content
-        self.main_paned = Gtk.Paned.new(Gtk.Orientation.HORIZONTAL)
-        main_box.pack_start(self.main_paned, True, True, 0)
-
-        # Build sidebar
-        self.sidebar = self.build_sidebar()
-        self.main_paned.pack1(self.sidebar, False, False)
-
-        # Build main content area
-        self.content_area = self.build_content_area()
-        self.main_paned.pack2(self.content_area, True, True)
-
-        # Set initial pane position (30% for sidebar)
-        self.main_paned.set_position(270)
-
-        # Add status bar
-        self.status_bar = Gtk.Statusbar()
-        self.status_context = self.status_bar.get_context_id("main")
-        main_box.pack_end(self.status_bar, False, False, 0)
-        self.status_bar.push(self.status_context, "Ready")
-
-    def build_header(self):
-        """Build the header bar with controls"""
-        header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        header_box.set_margin_top(6)
-        header_box.set_margin_bottom(6)
-        header_box.set_margin_start(10)
-        header_box.set_margin_end(10)
-
-        # Logo and title
-        try:
-            logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.jpg")
-            if os.path.exists(logo_path):
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(logo_path, 32, 32, True)
-                logo = Gtk.Image.new_from_pixbuf(pixbuf)
-                header_box.pack_start(logo, False, False, 0)
-        except Exception as e:
-            logger.warning(f"Could not load logo: {e}")
-
-        # Create empty labels first, then set markup
-        title = Gtk.Label()
-        title.set_markup("<b>OpenManus</b>")
-        title.set_margin_start(10)
-        header_box.pack_start(title, False, False, 0)
-
-        # Spacer
-        spacer = Gtk.Label()
-        header_box.pack_start(spacer, True, True, 0)
-
-        # Settings button
-        settings_button = Gtk.Button.new_from_icon_name("preferences-system", Gtk.IconSize.BUTTON)
-        settings_button.set_tooltip_text("Settings")
-        settings_button.connect("clicked", self.on_settings_clicked)
-        header_box.pack_end(settings_button, False, False, 0)
-
-        return header_box
-
-    def build_sidebar(self):
-        """Build the sidebar with configuration options"""
-        sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        sidebar_box.set_margin_top(10)
-        sidebar_box.set_margin_bottom(10)
-        sidebar_box.set_margin_start(10)
-        sidebar_box.set_margin_end(10)
-
-        # Sidebar header
-        # Create empty labels first, then set markup
-        sidebar_header = Gtk.Label()
-        sidebar_header.set_markup("<b>Configuration</b>")
-        sidebar_header.set_halign(Gtk.Align.START)
-        sidebar_box.pack_start(sidebar_header, False, False, 0)
-
-        # Separator
-        separator = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
-        sidebar_box.pack_start(separator, False, False, 10)
-
-        # Provider selection
-        provider_frame = Gtk.Frame(label="AI Provider")
-        provider_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        provider_frame.add(provider_box)
-
-        self.provider_combo = Gtk.ComboBoxText()
-        providers = ["openai", "anthropic", "mistral", "groq", "ollama"]
-        for provider in providers:
-            self.provider_combo.append_text(provider.capitalize())
-        self.provider_combo.set_active(0)
-        self.provider_combo.connect("changed", self.on_provider_changed)
-        provider_box.pack_start(self.provider_combo, False, False, 5)
-
-        sidebar_box.pack_start(provider_frame, False, False, 10)
-
-        # Model selection now depends on provider
-        self.model_combo = Gtk.ComboBoxText()
-        self.model_combo.connect('changed', self.on_model_changed)  # Signal connection
-        sidebar_box.pack_start(self.model_combo, False, False, 5)
-
-        # Temperature setting
-        temp_label = Gtk.Label(label="Temperature:")
-        temp_label.set_halign(Gtk.Align.START)
-        sidebar_box.pack_start(temp_label, False, False, 10)
-
-        temp_adj = Gtk.Adjustment(
-            value=0.0,
-            lower=0.0,
-            upper=2.0,
-            step_increment=0.1,
-            page_increment=0.5,
-            page_size=0
-        )
-        self.temp_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=temp_adj)
-        self.temp_scale.set_digits(1)
-        self.temp_scale.set_value_pos(Gtk.PositionType.RIGHT)
-        self.temp_scale.connect("value-changed", self.on_temperature_changed)
-        sidebar_box.pack_start(self.temp_scale, False, False, 0)
-
-        # Max tokens setting
-        tokens_label = Gtk.Label(label="Max Tokens:")
-        tokens_label.set_halign(Gtk.Align.START)
-        sidebar_box.pack_start(tokens_label, False, False, 10)
-
-        tokens_adj = Gtk.Adjustment(
-            value=4096,
-            lower=256,
-            upper=16384,
-            step_increment=256,
-            page_increment=1024,
-            page_size=0
-        )
-        self.tokens_scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=tokens_adj)
-        self.tokens_scale.set_digits(0)
-        self.tokens_scale.set_value_pos(Gtk.PositionType.RIGHT)
-        self.tokens_scale.connect("value-changed", self.on_tokens_changed)
-        sidebar_box.pack_start(self.tokens_scale, False, False, 0)
-
-        # Vision settings
-        vision_frame = Gtk.Frame(label="Vision Settings")
-        vision_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        vision_frame.add(vision_box)
-
-        self.vision_switch = Gtk.Switch()
-        self.vision_switch.set_active(False)
-        vision_box.pack_start(Gtk.Label(label="Enable Vision"), False, False, 0)
-        vision_box.pack_start(self.vision_switch, False, False, 0)
-
-        sidebar_box.pack_start(vision_frame, False, False, 10)
-
-        # Browser configuration
-        browser_frame = Gtk.Frame(label="Browser Settings")
-        browser_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        browser_frame.add(browser_box)
-
-        self.headless_switch = Gtk.Switch()
-        browser_box.pack_start(self._create_labeled_control("Headless mode:", self.headless_switch), False, False, 5)
-
-        self.chrome_path_entry = Gtk.Entry()
-        browser_box.pack_start(self._create_labeled_control("Chrome path:", self.chrome_path_entry), False, False, 5)
-
-        self.wss_entry = Gtk.Entry()
-        browser_box.pack_start(self._create_labeled_control("WSS URL:", self.wss_entry), False, False, 5)
-
-        self.cdp_entry = Gtk.Entry()
-        browser_box.pack_start(self._create_labeled_control("CDP URL:", self.cdp_entry), False, False, 5)
-
-        sidebar_box.pack_start(browser_frame, False, False, 10)
-
-        # Tool selection
-        tools_label = Gtk.Label(label="Available Tools:")
-        tools_label.set_halign(Gtk.Align.START)
-        sidebar_box.pack_start(tools_label, False, False, 10)
-
-        # Tool checkboxes
-        tools_frame = Gtk.Frame()
-        tools_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-        tools_frame.add(tools_box)
-
-        tool_names = ["Python Execute", "Web Search", "Browser Use", "File Saver"]
-        self.tool_switches = []
-        for tool in tool_names:
-            checkbox = Gtk.CheckButton.new_with_label(tool)
-            checkbox.set_active(True)
-            checkbox.connect("toggled", self.on_tool_toggled, tool)
-            tools_box.pack_start(checkbox, False, False, 0)
-            self.tool_switches.append((tool, checkbox))
-
-        sidebar_box.pack_start(tools_frame, False, False, 0)
-
-        # Spacer
-        spacer = Gtk.Label()
-        sidebar_box.pack_start(spacer, True, True, 0)
-
-        # Run button
-        run_button = Gtk.Button.new_with_label("Run Agent")
-        run_button.connect("clicked", self.on_run_clicked)
-        sidebar_box.pack_end(run_button, False, False, 0)
-
-        return sidebar_box
-
-    def _create_labeled_control(self, label_text, control):
-        """Create a box with a label and control widget"""
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
-        label = Gtk.Label(label=label_text)
-        label.set_halign(Gtk.Align.START)
-        label.set_size_request(120, -1)  # Fixed width for alignment
-
-        box.pack_start(label, False, False, 0)
-        box.pack_start(control, True, True, 0)
-
-        return box
-
-    def build_content_area(self):
-        """Build the main content area with prompt input and response display"""
-        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        content_box.set_margin_top(10)
-        content_box.set_margin_bottom(10)
-        content_box.set_margin_start(10)
-        content_box.set_margin_end(10)
-
-        # Prompt input area
-        prompt_label = Gtk.Label(label="Enter your prompt:")
-        prompt_label.set_halign(Gtk.Align.START)
-        content_box.pack_start(prompt_label, False, False, 0)
-
-        prompt_scroll = Gtk.ScrolledWindow()
-        prompt_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        prompt_scroll.set_min_content_height(100)
-
-        self.prompt_buffer = Gtk.TextBuffer()
-        self.prompt_text = Gtk.TextView.new_with_buffer(self.prompt_buffer)
-        self.prompt_text.set_wrap_mode(Gtk.WrapMode.WORD)
-        prompt_scroll.add(self.prompt_text)
-
-        content_box.pack_start(prompt_scroll, False, False, 0)
-
-        # Submit button
-        self.submit_button = Gtk.Button.new_with_label("Submit")
-        self.submit_button.connect("clicked", self.on_submit_clicked)
-        content_box.pack_start(self.submit_button, False, False, 0)
-
-        # Response display area
-        response_label = Gtk.Label(label="Response:")
-        response_label.set_halign(Gtk.Align.START)
-        content_box.pack_start(response_label, False, False, 10)
-
-        # Create a scrolled window for the response text
-        response_scroll = Gtk.ScrolledWindow()
-        response_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        response_scroll.set_min_content_height(200)
-
-        # Create a text view for the response
-        self.response_text = Gtk.TextView()
-        self.response_text.set_editable(False)
-        self.response_text.set_wrap_mode(Gtk.WrapMode.WORD)
-        response_scroll.add(self.response_text)
-        content_box.pack_start(response_scroll, True, True, 0)
-
-        # Set up custom log handler to capture output
-        self.log_handler = GtkLogHandler(self.response_text)
-        self.log_handler.setLevel(logging.INFO)
-        root_logger = logging.getLogger()
-        root_logger.addHandler(self.log_handler)
-
-        # Progress indicator
-        self.progress_bar = Gtk.ProgressBar()
-        self.progress_bar.set_pulse_step(0.1)
-        content_box.pack_start(self.progress_bar, False, False, 0)
-
-        return content_box
-
-    def build_settings_dialog(self):
-        """Create the settings dialog"""
-        self.settings_dialog = Gtk.Dialog(title="Settings", parent=self, flags=0)
-        self.settings_dialog.set_default_size(400, 300)
-
-        content_area = self.settings_dialog.get_content_area()
-        content_area.set_spacing(10)
-        content_area.set_margin_start(10)
-        content_area.set_margin_end(10)
-        content_area.set_margin_top(10)
-        content_area.set_margin_bottom(10)
-
-        # Provider-specific settings container
-        self.provider_settings_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        content_area.add(self.provider_settings_container)
-
-        # API Key
-        self.api_key_label = Gtk.Label(label="API Key:")
-        self.api_key_label.set_halign(Gtk.Align.START)
-        self.api_key_entry = Gtk.Entry()
-        self.api_key_entry.set_visibility(False)  # Password-style entry
-        self.provider_settings_container.add(self.api_key_label)
-        self.provider_settings_container.add(self.api_key_entry)
-
-        # Base URL
-        self.base_url_label = Gtk.Label(label="API Base URL:")
-        self.base_url_label.set_halign(Gtk.Align.START)
-        self.base_url_entry = Gtk.Entry()
-        self.provider_settings_container.add(self.base_url_label)
-        self.provider_settings_container.add(self.base_url_entry)
-
-        # Headless mode
-        self.headless_switch = Gtk.Switch()
-        self.provider_settings_container.add(self._create_labeled_control("Headless mode:", self.headless_switch))
-
-        # Chrome path
-        self.chrome_path_entry = Gtk.Entry()
-        self.provider_settings_container.add(self._create_labeled_control("Chrome path:", self.chrome_path_entry))
-
-        # WSS URL
-        self.wss_url_entry = Gtk.Entry()
-        self.provider_settings_container.add(self._create_labeled_control("WSS URL:", self.wss_url_entry))
-
-        # CDP URL
-        self.cdp_url_entry = Gtk.Entry()
-        self.provider_settings_container.add(self._create_labeled_control("CDP URL:", self.cdp_url_entry))
-
-        # Buttons
-        button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        button_box.set_halign(Gtk.Align.END)
-
-        cancel_button = Gtk.Button(label="Cancel")
-        cancel_button.connect("clicked", lambda w: self.settings_dialog.hide())
-
-        save_button = Gtk.Button(label="Save")
-        save_button.connect("clicked", self.on_save_settings)
-
-        button_box.pack_start(cancel_button, False, False, 0)
-        button_box.pack_start(save_button, False, False, 0)
-
-        content_area.add(button_box)
-        self.settings_dialog.show_all()
-        self.settings_dialog.hide()  # Initially hidden
-
-    def load_config_into_ui(self):
-        try:
-            with open('config/config.toml', 'rb') as f:
-                config = tomli.load(f)
-
-            # Load providers
-            providers = ["openai", "anthropic", "mistral", "groq", "ollama"]
-            self.provider_combo.handler_block_by_func(self.on_provider_changed)
-            self.provider_combo.remove_all()
-            for provider in providers:
-                self.provider_combo.append_text(provider.capitalize())
-            self.provider_combo.set_active(0)
-            self.provider_combo.handler_unblock_by_func(self.on_provider_changed)
-
-            # Load browser settings
-            browser_config = config.get('browser', {})
-            self.headless_switch.set_active(browser_config.get('headless', False))
-            self.chrome_path_entry.set_text(browser_config.get('chrome_instance_path', ''))
-            self.wss_url_entry.set_text(browser_config.get('wss_url', ''))
-            self.cdp_url_entry.set_text(browser_config.get('cdp_url', ''))
-
-        except Exception as e:
-            logging.error(f"Config loading error: {str(e)}")
-
-    def save_ui_to_config(self):
-        # Load existing config to preserve all settings
-        try:
-            with open('config/config.toml', 'rb') as f:
-                config = tomli.load(f)
-        except FileNotFoundError:
-            config = {'llm': {}, 'browser': {}}
-
-        # Update current provider
-        config['llm']['default']['api_key'] = self.api_key_entry.get_text()
-        base_url = self.base_url_entry.get_text()
-        if base_url:
-            config['llm']['default']['base_url'] = base_url
-
-        # Update browser settings
-        config['browser'] = {
-            'headless': self.headless_switch.get_active(),
-            'chrome_instance_path': self.chrome_path_entry.get_text(),
-            'wss_url': self.wss_url_entry.get_text(),
-            'cdp_url': self.cdp_url_entry.get_text()
-        }
-
-        with open('config/config.toml', 'wb') as f:
-            tomli_w.dump(config, f)
 
     def on_model_changed(self, combo):
         """Handle model selection change"""
@@ -869,7 +642,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 config['llm'] = {}
 
             config['llm']['default']['api_key'] = self.api_key_entry.get_text()
-            base_url = self.base_url_entry.get_text()
+            base_url = self.api_url_entry.get_text()
             if base_url:
                 config['llm']['default']['base_url'] = base_url
 
@@ -1064,6 +837,85 @@ class MainWindow(Gtk.ApplicationWindow):
         """Handle window close event"""
         # Clean up resources
         return False  # Allow the window to close
+
+    def build_chat_interface(self):
+        chat_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        
+        # Prompt input
+        prompt_label = self.create_label("Your Prompt:")
+        self.prompt_buffer = Gtk.TextBuffer()
+        self.prompt_view = Gtk.TextView(buffer=self.prompt_buffer)
+        self.prompt_view.set_wrap_mode(Gtk.WrapMode.WORD)
+        prompt_scroll = Gtk.ScrolledWindow()
+        prompt_scroll.set_min_content_height(100)
+        prompt_scroll.add(self.prompt_view)
+
+        # Response display
+        response_label = self.create_label("Agent Response:")
+        self.response_buffer = Gtk.TextBuffer()
+        self.response_view = Gtk.TextView(buffer=self.response_buffer)
+        self.response_view.set_editable(False)
+        self.response_view.set_wrap_mode(Gtk.WrapMode.WORD)
+        response_scroll = Gtk.ScrolledWindow()
+        response_scroll.set_min_content_height(200)
+        response_scroll.add(self.response_view)
+
+        # Control buttons
+        self.submit_btn = Gtk.Button(label="Submit Query")
+        self.submit_btn.connect("clicked", self.on_submit_clicked)
+
+        # Progress indicator
+        self.progress_bar = Gtk.ProgressBar()
+
+        chat_box.pack_start(prompt_label, False, False, 0)
+        chat_box.pack_start(prompt_scroll, True, True, 0)
+        chat_box.pack_start(self.submit_btn, False, False, 5)
+        chat_box.pack_start(response_label, False, False, 0)
+        chat_box.pack_start(response_scroll, True, True, 0)
+        chat_box.pack_start(self.progress_bar, False, False, 0)
+
+        return chat_box
+
+    def create_scale(self, label_text, min_val, max_val, step):
+        box = Gtk.Box(spacing=6)
+        label = self.create_label(label_text)
+        adj = Gtk.Adjustment(value=1.0, lower=min_val, upper=max_val, step_increment=step)
+        scale = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj)
+        scale.set_digits(2)
+        scale.set_hexpand(True)
+        box.pack_start(label, False, False, 0)
+        box.pack_start(scale, True, True, 0)
+        return box
+
+    def create_spin(self, label_text, min_val, max_val, step):
+        box = Gtk.Box(spacing=6)
+        label = self.create_label(label_text)
+        spin = Gtk.SpinButton.new_with_range(min_val, max_val, step)
+        box.pack_start(label, False, False, 0)
+        box.pack_start(spin, True, True, 0)
+        return box
+
+    def on_provider_changed(self, combo):
+        provider = combo.get_active_text()
+        self.update_provider_visibility(provider)
+
+    def update_provider_visibility(self, provider):
+        # Update UI visibility based on provider
+        if provider == "OpenAI":
+            self.api_key_label.set_visible(True)
+            self.api_key_entry.set_visible(True)
+            self.base_url_label.set_visible(True)
+            self.base_url_entry.set_visible(True)
+        elif provider == "Anthropic":
+            self.api_key_label.set_visible(True)
+            self.api_key_entry.set_visible(True)
+            self.base_url_label.set_visible(False)
+            self.base_url_entry.set_visible(False)
+        else:
+            self.api_key_label.set_visible(False)
+            self.api_key_entry.set_visible(False)
+            self.base_url_label.set_visible(False)
+            self.base_url_entry.set_visible(False)
 
 
 class SettingsDialog(Gtk.Dialog):
